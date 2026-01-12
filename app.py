@@ -2,9 +2,9 @@ import streamlit as st
 import os
 import time
 import cohere
+
 from google import genai
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -13,7 +13,7 @@ st.set_page_config(page_title="RAG Architect | Advanced", layout="wide")
 load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "").strip()
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -26,16 +26,12 @@ def get_pinecone_index():
     return pc.Index(PINECONE_INDEX_NAME)
 
 @st.cache_resource
-def get_embedding_model():
-    return SentenceTransformer('all-mpnet-base-v2')
-
-@st.cache_resource
 def get_cohere_client():
     return cohere.Client(COHERE_API_KEY)
 
 def configure_gemini():
-    return genai.Client()
-
+    # Initialize the new Google GenAI Client
+    return genai.Client(api_key=GEMINI_API_KEY)
 
 def process_pdf(file):
     reader = PdfReader(file)
@@ -103,19 +99,24 @@ with st.sidebar:
                     except Exception as e:
                         st.warning(f"Could not clear index: {e}")
 
-                            try:
-                        model = get_embedding_model()
-                        embeddings = model.encode([c.page_content for c in all_chunks])
-
-                            except Exception as e:
-                                            st.error(f"Error loading embedding model: {e}")
+                    # Use Cohere for Embeddings
+                    co = get_cohere_client()
+                    texts = [c.page_content for c in all_chunks]
+                    
+                    # Embed in batches to be safe, but small files are fine
+                    embeddings_response = co.embed(
+                        texts=texts,
+                        model="embed-english-v3.0",
+                        input_type="search_document"
+                    )
+                    embeddings = embeddings_response.embeddings
                     
                     vectors = []
                     for i, chunk in enumerate(all_chunks):
                         safe_id = f"{chunk.metadata['source']}_{i}_{int(time.time())}" 
                         vectors.append({
                             "id": safe_id,
-                            "values": embeddings[i].tolist(),
+                            "values": embeddings[i],
                             "metadata": {"text": chunk.page_content, "source": chunk.metadata['source']}
                         })
                     
@@ -157,15 +158,20 @@ if query := st.chat_input("Ask a question about your document..."):
         
         try:
             # Pipeline Logic
-            model = get_embedding_model()
-            query_vec = model.encode(query).tolist()
+            co = get_cohere_client()
+            query_embed_response = co.embed(
+                texts=[query],
+                model="embed-english-v3.0",
+                input_type="search_query"
+            )
+            query_vec = query_embed_response.embeddings[0]
             
             index = get_pinecone_index()
             results = index.query(vector=query_vec, top_k=20, include_metadata=True)
             retrieved_texts = [match['metadata']['text'] for match in results['matches']]
             
             status.caption("⚖️ Phase 2: Neural Reranking (Cohere)...")
-            co = get_cohere_client()
+            # Reuse Cohere Client
             rerank_results = co.rerank(
                 model="rerank-english-v3.0",
                 query=query,
@@ -183,7 +189,6 @@ if query := st.chat_input("Ask a question about your document..."):
             prompt = f"""
 You are a professional Retrieval-Augmented Generation (RAG) assistant. 
 Your goal is to answer the user's question accurately using ONLY the provided context blocks.
-
 ### INSTRUCTIONS:
 1. USE CONTEXT: Base your answer solely on the provided context snippets labeled [1], [2], [3], etc.
 2. CITATIONS: Every claim you make MUST be followed by an inline citation. 
@@ -196,10 +201,8 @@ Your goal is to answer the user's question accurately using ONLY the provided co
     - If the user greets you ("hi", "hello"), answer politely and ask how you can help with the document.
    Do NOT use outside knowledge for specific facts.
 4. FORMATTING: Use clear, concise language and bullet points if the answer is complex.
-
 ### PROVIDED CONTEXT:
 {citation_context}
-
 ### USER QUESTION:
 {query}
 """
