@@ -1,0 +1,9 @@
+streamlit
+python-dotenv
+cohere
+google-genai
+pinecone
+sentence-transformers
+langchain-text-splitters
+pypdf
+tiktoken
