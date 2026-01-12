@@ -103,8 +103,12 @@ with st.sidebar:
                     except Exception as e:
                         st.warning(f"Could not clear index: {e}")
 
-                    model = get_embedding_model()
-                    embeddings = model.encode([c.page_content for c in all_chunks])
+                            try:
+                        model = get_embedding_model()
+                        embeddings = model.encode([c.page_content for c in all_chunks])
+
+                            except Exception as e:
+                                            st.error(f"Error loading embedding model: {e}")
                     
                     vectors = []
                     for i, chunk in enumerate(all_chunks):
